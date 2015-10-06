@@ -1,0 +1,543 @@
+DROP DATABASE IF EXISTS `%DBNAME%`;
+
+CREATE DATABASE `%DBNAME%` CHARACTER SET utf8 COLLATE utf8_general_ci;
+
+GRANT ALL ON `%DBNAME%`.* TO `test`@localhost IDENTIFIED BY 'pass';
+FLUSH PRIVILEGES;
+
+-- Reference Tables
+
+USE `%DBNAME%`;
+SET storage_engine=InnoDB;
+
+
+CREATE TABLE `ref_entity_type` (
+  `code`            char(1)       not null,
+  PRIMARY KEY (`code`)
+);
+
+INSERT INTO `ref_entity_type`(`code`)
+  VALUES
+    ('A'), -- Athletes
+    ('T'), -- Teams (NCAA Championships)
+    ('S'), -- Sports
+    ('R'); -- Roles
+
+CREATE TABLE `ref_media_type` (
+  `code`            char(1)       not null,
+  PRIMARY KEY (`code`)
+);
+
+INSERT INTO `ref_media_type`(`code`)
+  VALUES
+    ('T'), -- Text
+    ('V'), -- Video
+    ('I'), -- Image
+    ('A'); -- Audio 
+
+CREATE TABLE `ref_gender` (
+  `code`            char(1)       not null,
+  PRIMARY KEY (`code`)
+);
+
+INSERT INTO `ref_gender`(`code`)
+  VALUES
+    ('M'), -- Male
+    ('F'), -- Female
+    ('*'); -- Both (Not for athletes; used for teams)
+
+CREATE TABLE `ref_title` (
+  `string`          varchar(254) not null,
+  PRIMARY KEY (`string`)
+);
+
+INSERT INTO `ref_title`(`string`)
+  VALUES
+    ('Dr.'),
+    ('Professor'),
+    ('Sister'),
+    ('Reverend'),
+    ('The Honorable'),
+    ('Ambassador'),
+    ('Captain'),
+    ('Colonel'),
+    ('Commander'),
+    ('Lieutenant'),
+    ('Lt. Colonel'),
+    ('Lt. Commander'),
+    ('Major'),
+    ('Major General');
+
+CREATE TABLE `ref_participation_role` (
+  `string`    varchar(254) not null,
+  PRIMARY KEY (`string`)
+);
+
+INSERT INTO `ref_participation_role`(`string`)
+  VALUES
+    ('Athlete'),
+    ('Coach'),
+    ('Asst. Coach');
+
+CREATE TABLE `ref_media_role` (
+  `string` varchar(254) not null,
+  PRIMARY KEY (`string`)
+);
+
+INSERT INTO `ref_media_role` (`string`) 
+  VALUES
+    ('Legacy UCLA Image'),
+    ('Legacy Post Image'),
+    ('Legacy UCLA Video'),
+    ('Legacy Post Video'),
+    ('Legacy UCLA Story'),
+    ('Legacy Post Story');
+
+-- TODO: Lock ref tables down
+
+-- Entity stuff... 
+
+CREATE TABLE `entity` (
+  `id`			 int unsigned			   not null auto_increment,
+  `type`     char(1)             not null ,
+  PRIMARY KEY (`id`),
+  FOREIGN KEY (`type`) REFERENCES `ref_entity_type`(`code`)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT
+);
+
+CREATE TABLE `athlete` (
+  `entity_id` 			int unsigned 	not null DEFAULT 0,
+  `title`			      varchar(254)  DEFAULT null,
+  `first_name` 			varchar(254)	not null,
+  `middle_name`			varchar(254)	DEFAULT null,
+  `last_name`			  varchar(254)	not null,
+  `gender`				  char(1)			  not null,
+  `hof_induction_year`	year			DEFAULT null,
+  PRIMARY KEY ( `entity_id` ),
+  FOREIGN KEY ( `entity_id` ) REFERENCES `entity`(`id`)
+    ON DELETE RESTRICT
+    ON UPDATE CASCADE,
+  FOREIGN KEY (`gender`) REFERENCES `ref_gender`(`code`)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT,
+  FOREIGN KEY (`title`) REFERENCES `ref_title`(`string`)
+    ON UPDATE CASCADE
+    ON DELETE RESTRICT,
+  UNIQUE KEY `full_name` (`last_name`, `first_name`, `middle_name`)
+);
+
+CREATE TABLE `sport` (
+  `entity_id`       int           unsigned not null DEFAULT 0,
+  `short_name`      varchar(254)  not null,
+  `full_name`       varchar(254)  not null,
+  `gender`          char(1)       not null,
+  PRIMARY KEY (`entity_id`),
+  FOREIGN KEY ( `entity_id` ) REFERENCES `entity`(`id`)
+    ON DELETE RESTRICT
+    ON UPDATE CASCADE,
+  FOREIGN KEY (`gender`) REFERENCES `ref_gender`(`code`)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT,
+  UNIQUE KEY (`full_name`)
+);
+
+CREATE TABLE `team` (
+  `entity_id`       int unsigned  not null DEFAULT 0,
+  `sport_id`        int unsigned  not null,
+  `year`            year          not null,
+  PRIMARY KEY (`entity_id`),
+  FOREIGN KEY (`entity_id`) REFERENCES `entity`(`id`)
+    ON DELETE RESTRICT
+    ON UPDATE CASCADE,
+  FOREIGN KEY ( `sport_id`) REFERENCES `sport`(`entity_id`)
+    ON DELETE RESTRICT
+    ON UPDATE CASCADE,
+  UNIQUE KEY `sport_year` ( `sport_id`, `year` )
+);
+
+DELIMITER //
+CREATE TRIGGER `athlete_insert` BEFORE INSERT ON `athlete`
+FOR EACH ROW
+  BEGIN
+    if (new.`entity_id` = 0) then
+      INSERT INTO `entity`
+        (`id`, `type`)
+      VALUES
+        (null, 'A');
+
+      set new.`entity_id` = last_insert_id();
+    else 
+      if (SELECT `entity`.`type`
+             FROM `entity`
+             WHERE `entity`.`id` = new.`entity_id`
+             )!='A' then
+        signal sqlstate '45000'
+          set message_text = 'Entity id already exists in table, but has wrong type.';
+      end if;
+    end if;
+
+    if (new.`gender` = '*') then
+      signal sqlstate '45000'
+        set message_text = 'Illegal athlete gender: (B)oth is reserved for teams.';
+    end if;
+
+    if (new.`middle_name` IS NULL) then
+      if ( SELECT EXISTS(
+        SELECT `first_name`, `middle_name`, `last_name`
+        FROM `athlete`
+        WHERE `athlete`.`first_name` = new.`first_name`
+        AND `athlete`.`last_name` = new.`last_name` 
+        AND `athlete`.`middle_name` IS NULL )
+        ) then
+        signal sqlstate '45000'
+          set message_text = 'Duplicate athlete with null `middle_name` is forbidden.  See docs for details.';
+      end if;
+    end if;
+  END//
+
+CREATE TRIGGER `athlete_delete` AFTER DELETE ON `athlete`
+FOR EACH ROW
+  BEGIN
+    DELETE FROM `entity`
+      WHERE `id` = old.`entity_id`;
+  END//
+
+CREATE TRIGGER `team_insert` BEFORE INSERT ON `team`
+FOR EACH ROW
+  BEGIN
+    if(new.`entity_id` = 0) then
+      INSERT INTO `entity`
+        (`id`, `type`)
+      VALUES
+        (null, 'T');
+
+      set new.`entity_id` = last_insert_id();
+    else
+      if (SELECT `entity`.`type`
+          FROM `entity`
+          WHERE `entity`.`id` = new.`entity_id`
+        )!='T' then
+
+        signal sqlstate '45000'
+          set message_text = 'Entity id already exists in table, but has wrong type.';
+      end if;
+    end if;
+  END//
+
+CREATE TRIGGER `team_delete` AFTER DELETE ON `team`
+FOR EACH ROW
+  BEGIN
+    DELETE FROM `entity`
+      WHERE `id` = old.`entity_id`;
+  END//
+DELIMITER ;
+
+DELIMITER //
+CREATE TRIGGER `sport_insert` BEFORE INSERT ON `sport`
+FOR EACH ROW
+  BEGIN
+    if(new.`entity_id` = 0) then
+      INSERT INTO `entity`
+        (`id`, `type`)
+      VALUES
+        (null, 'S');
+
+      set new.`entity_id` = last_insert_id();
+    else
+      if (SELECT `entity`.`type`
+          FROM `entity`
+          WHERE `entity`.`id` = new.`entity_id`
+        )!='S' then
+
+        signal sqlstate '45000'
+          set message_text = 'Entity id already exists in table, but has wrong type.';
+      end if;
+    end if;
+  END//
+
+CREATE TRIGGER `sport_delete` AFTER DELETE ON `sport`
+FOR EACH ROW
+  BEGIN
+    DELETE FROM `entity`
+      WHERE `id` = old.`entity_id`;
+  END//
+DELIMITER ;
+
+INSERT INTO `sport`(`short_name`, `full_name`, `gender`)
+  VALUES
+    ('Baseball/Softball', 'Baseball', 'M'),
+    ('Football', 'Football', 'M'),
+    ('Basketball', "Men's Basketball", 'M'),
+    ('Rowing', "Men's Rowing", 'M'),
+    ('Cricket', "Men's Cricket", 'M'),
+    ('Cross Country', "Men's Cross Country", 'M'),
+    ('Fencing', "Men's Fencing", 'M'),
+    ('Golf', "Men's Golf", 'M'),
+    ('Gymnastics', "Men's Gymnastics", 'M'),
+    ('Ice Hockey', "Men's Ice Hockey", 'M'),
+    ('Rifle', "Men's Rifle", 'M'),
+    ('Rugby', "Men's Rugby", 'M'),
+    ('Soccer', "Men's Soccer", 'M'),
+    ('Swimming', "Men's Swimming", 'M'),
+    ('Tennis', "Men's Tennis", 'M'),
+    ('Track & Field', "Men's Track & Field", 'M'),
+    ('Volleyball', "Men's Volleyball", 'M'),
+    ('Water Polo', "Men's Water Polo", 'M'),
+    ('Wrestling', "Men's Wrestling", 'M'),
+    ('Baseball/Softball', 'Softball', 'F'),
+    ('Badminton', "Women's Badminton", 'F'),
+    ('Basketball', "Women's Basketball", 'F'),
+    ('Rowing', "Women's Rowing", 'F'),
+    ('Cross Country', "Women's Cross Country", 'F'),
+    ('Fencing', "Women's Fencing", 'F'),
+    ('Golf', "Women's Golf", 'F'),
+    ('Gymnastics', "Women's Gymnastics", 'F'),
+    ('Rifle', "Women's Rifle", 'F'),
+    ('Soccer', "Women's Soccer", 'F'),
+    ('Swimming', "Women's Swimming", 'F'),
+    ('Tennis', "Women's Tennis", 'F'),
+    ('Track & Field', "Women's Track & Field", 'F'),
+    ('Volleyball', "Women's Volleyball", 'F'),
+    ('Water Polo', "Women's Water Polo", 'F'),
+    ('Badminton', "Men's Badminton", 'M'),
+    ('Archery', "Women's Archery", 'F'),
+    ('Boxing', "Men's Boxing", 'M'),
+    ('Field Hockey', "Women's Field Hockey", 'F'),
+    ('Handball', "Men's Handball", 'M'),
+    ('Lacrosse', "Women's Lacrosse", 'F'),
+    ('Bowling', "Men's Bowling", 'M'),
+    ('Bowling', "Women's Bowling", 'F'),
+    ('Pistol', "Pistol", '*'),
+    ('Polo', "Men's Polo", 'M'),
+    ('Sailing', "Men's Sailing", 'M'),
+    ('Skiing', "Men's Skiing", 'M'),
+    ('Athletic Games', "Women's Athletic Games", 'F');
+
+CREATE TABLE `participation` (
+  `athlete_id`	int	unsigned not null,
+  `sport_id`	  int unsigned not null,
+  `role`        varchar(254) not null,
+  `start`			  year 			 not null,
+  `end`			    year 			 not null,
+  PRIMARY KEY (`athlete_id`, `sport_id`),
+  FOREIGN KEY (`athlete_id`) REFERENCES athlete(`entity_id`)
+    ON DELETE CASCADE 
+    ON UPDATE CASCADE,
+  FOREIGN KEY (`sport_id`) REFERENCES sport(`entity_id`)
+    ON DELETE RESTRICT
+    ON UPDATE CASCADE,
+  FOREIGN KEY (`role`) REFERENCES ref_participation_role(`string`)
+    ON DELETE RESTRICT
+    ON UPDATE CASCADE
+);
+
+-- media
+
+CREATE TABLE `media` (
+  `id`          int unsigned not null auto_increment,
+  `type`        char(1) not null,
+  PRIMARY KEY(`id`),
+  FOREIGN KEY (`type`) REFERENCES `ref_media_type`(`code`)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT
+);
+
+CREATE TABLE `image` (
+  `media_id`    int unsigned not null DEFAULT 0,
+  `path`        varchar(254) not null,
+  `title`       varchar(254) DEFAULT null,
+  `caption`     varchar(254) DEFAULT null,
+  `width`       smallint unsigned DEFAULT null,
+  `height`      smallint unsigned DEFAULT null,
+  `size`        int unsigned DEFAULT null,
+  PRIMARY KEY(`media_id`),
+  FOREIGN KEY(`media_id`) REFERENCES `media`(`id`)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT,
+  UNIQUE KEY(`path`)
+);
+
+CREATE TABLE `video` (
+  `media_id`    int unsigned not null DEFAULT 0,
+  `path`        varchar(254) not null,
+  `title`       varchar(254) DEFAULT null,
+  `caption`     varchar(254) DEFAULT null,
+  `width`       smallint unsigned DEFAULT null,
+  `height`      smallint unsigned DEFAULT null,
+  `length`      smallint unsigned DEFAULT null,
+  `size`        int unsigned DEFAULT null,
+  PRIMARY KEY(`media_id`),
+  FOREIGN KEY(`media_id`) REFERENCES `media`(`id`)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT,
+  UNIQUE KEY(`path`)
+);
+
+CREATE TABLE `audio` (
+  `media_id`    int unsigned not null DEFAULT 0,
+  `path`        varchar(254) not null,
+  `title`       varchar(254) DEFAULT null,
+  `caption`     varchar(254) DEFAULT null,
+  `length`      smallint unsigned DEFAULT null,
+  `size`        int unsigned DEFAULT null,
+  PRIMARY KEY(`media_id`),
+  FOREIGN KEY(`media_id`) REFERENCES `media`(`id`)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT,
+  UNIQUE KEY(`path`)
+);
+
+CREATE TABLE `text` (
+  `media_id`    int unsigned not null DEFAULT 0,
+  `text`        longtext not null,
+  `title`       varchar(254) DEFAULT null,
+  `caption`     varchar(254) DEFAULT null,
+  PRIMARY KEY(`media_id`),
+  FOREIGN KEY(`media_id`) REFERENCES `media`(`id`)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT
+);
+
+-- Media associations
+CREATE TABLE `media_association` (
+  `entity_id` int unsigned not null,
+  `media_id`  int unsigned not null,
+  FOREIGN KEY(`entity_id`) REFERENCES `entity`(`id`)
+    ON DELETE CASCADE
+    ON UPDATE CASCADE,
+  FOREIGN KEY(`media_id`) REFERENCES `media`(`id`)
+    ON DELETE CASCADE
+    ON UPDATE CASCADE
+);
+
+DELIMITER //
+CREATE TRIGGER `image_insert` BEFORE INSERT ON `image`
+FOR EACH ROW
+  BEGIN
+    if(new.`media_id` = 0) then
+      INSERT INTO `media`
+        (`id`, `type`)
+      VALUES
+        (null, 'I');
+
+      set new.`media_id` = last_insert_id();
+    else
+      if (SELECT `media`.`type`
+          FROM `media`
+          WHERE `media`.`id` = new.`media_id`
+        )!='I' then
+
+        signal sqlstate '45000'
+          set message_text = 'Entity id already exists in table, but has wrong type.';
+      end if;
+    end if;
+  END//
+
+CREATE TRIGGER `image_delete` AFTER DELETE ON `image`
+FOR EACH ROW
+  BEGIN
+    DELETE FROM `media`
+      WHERE `id` = old.`media_id`;
+  END//
+DELIMITER ;
+
+DELIMITER //
+CREATE TRIGGER `video_insert` BEFORE INSERT ON `video`
+FOR EACH ROW
+  BEGIN
+    if(new.`media_id` = 0) then
+      INSERT INTO `media`
+        (`id`, `type`)
+      VALUES
+        (null, 'V');
+
+      set new.`media_id` = last_insert_id();
+    else
+      if (SELECT `media`.`type`
+          FROM `media`
+          WHERE `media`.`id` = new.`media_id`
+        )!='V' then
+
+        signal sqlstate '45000'
+          set message_text = 'Entity id already exists in table, but has wrong type.';
+      end if;
+    end if;
+  END//
+
+CREATE TRIGGER `video_delete` AFTER DELETE ON `video`
+FOR EACH ROW
+  BEGIN
+    DELETE FROM `media`
+      WHERE `id` = old.`media_id`;
+  END//
+DELIMITER ;
+
+DELIMITER //
+CREATE TRIGGER `audio_insert` BEFORE INSERT ON `audio`
+FOR EACH ROW
+  BEGIN
+    if(new.`media_id` = 0) then
+      INSERT INTO `media`
+        (`id`, `type`)
+      VALUES
+        (null, 'A');
+
+      set new.`media_id` = last_insert_id();
+    else
+      if (SELECT `media`.`type`
+          FROM `media`
+          WHERE `media`.`id` = new.`media_id`
+        )!='A' then
+
+        signal sqlstate '45000'
+          set message_text = 'Entity id already exists in table, but has wrong type.';
+      end if;
+    end if;
+  END//
+
+CREATE TRIGGER `audio_delete` AFTER DELETE ON `audio`
+FOR EACH ROW
+  BEGIN
+    DELETE FROM `media`
+      WHERE `id` = old.`media_id`;
+  END//
+DELIMITER ;
+
+DELIMITER //
+CREATE TRIGGER `text_insert` BEFORE INSERT ON `text`
+FOR EACH ROW
+  BEGIN
+    if(new.`media_id` = 0) then
+      INSERT INTO `media`
+        (`id`, `type`)
+      VALUES
+        (null, 'T');
+
+      set new.`media_id` = last_insert_id();
+    else
+      if (SELECT `media`.`type`
+          FROM `media`
+          WHERE `media`.`id` = new.`media_id`
+        )!='T' then
+
+        signal sqlstate '45000'
+          set message_text = 'Entity id already exists in table, but has wrong type.';
+      end if;
+    end if;
+  END//
+
+CREATE TRIGGER `text_delete` AFTER DELETE ON `text`
+FOR EACH ROW
+  BEGIN
+    DELETE FROM `media`
+      WHERE `id` = old.`media_id`;
+  END//
+DELIMITER ;
+
+--Views 
+CREATE VIEW `team_readable`
+AS 
+  SELECT `team`.`year`, S.`full_name`, S.`gender`
+  FROM `team`
+  INNER JOIN `sport` S ON S.entity_id = `team`.`sport_id`;

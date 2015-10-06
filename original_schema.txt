@@ -1,0 +1,60 @@
+Original Schema
+===============
+
+'Athlete' Table
+---------------
+All columns have 'Athlete' prepended
+
+ID                  int(10)         NOT NULLABLE
+Title               varchar(50) <-- not used?
+NameFirst           varchar(50)
+NameMiddle          varchar(50)
+NameLast            varchar(50)
+Gender              varchar(50)
+PhotoUCLA           varchar(255)
+PhotoPostUCLA       varchar(255)
+VideoUCLA           varchar(255)
+VideoPostUCLA       varchar(255)
+StoryUCLA           longtext
+StoryPostUCLA       longtext
+HOFMember           tinyint(1)      NOT NULLABLE
+HOFInductionDate    smallint(5)
+
+Indexes:
+PRIMARY     AthleteID   UNIQUE
+PersonID    AthleteID   NO
+
+ForeignKeys:
+
+'AthleteSportParticipation' Table
+---------------------------------
+
+AthleteID           int(10)
+SportID             int(10)
+DateStart           int(10)
+DateEnd             int(10)
+
+'Sport' Table
+-------------
+All columns have 'Sport' prepended
+
+ID                      int(10)
+Name                    varchar(100)
+Gender                  varchar(50)
+Order                   int(10)          <-- not used?
+PhotoBackground         varchar(255)
+PhotoBackgroundSmall    varchar(255)
+
+'Team' Table
+------------
+All columns have 'Team' prepended
+
+ID                      int(10)
+DateChampionship        int(10)
+SportID                 int(10)
+DisplayName             varchar(255)
+Story                   longtext
+Roster                  longtext
+Photo                   varchar(255)
+Video                   varchar(255)
+
